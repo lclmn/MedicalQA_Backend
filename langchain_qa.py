@@ -3,14 +3,16 @@ from langchain_community.graphs import Neo4jGraph
 from langchain.chains import GraphCypherQAChain
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
+from config import Config
+from utils.logger import logger
 
-# Configuration
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USERNAME = "neo4j"
-NEO4J_PASSWORD = "password"
+# Configuration from environment variables
+NEO4J_URI = Config.NEO4J_URI
+NEO4J_USERNAME = Config.NEO4J_USERNAME
+NEO4J_PASSWORD = Config.NEO4J_PASSWORD
 
-DEEPSEEK_API_KEY = "sk-47b3a170a70f472fada2725f178a27bb"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_API_KEY = Config.DEEPSEEK_API_KEY
+DEEPSEEK_BASE_URL = Config.DEEPSEEK_BASE_URL
 
 MANUAL_SCHEMA = """
 Node properties:
@@ -161,8 +163,8 @@ Helpful Answer:"""
         Get answer from Neo4j KG. If no answer found, fallback to LLM general knowledge.
         """
         try:
+            logger.info(f"Processing question: {question}")
             # Try to get answer from KG
-            # print("DEBUG: Invoking KG chain...") 
             response = self.chain.invoke({"query": question})
             
             if isinstance(response, dict):
@@ -181,24 +183,31 @@ Helpful Answer:"""
             should_fallback = not result or any(trigger in result.lower() for trigger in fallback_triggers)
 
             if should_fallback:
-                print(f"KG failed to answer. Fallback to General Knowledge for: {question}")
+                logger.info(f"KG failed to answer. Fallback to General Knowledge for: {question}")
                 return self.fallback_to_general_knowledge(question)
             
+            logger.info(f"Successfully answered from KG")
             return result
         except Exception as e:
-            print(f"Error in GraphCypherQAChain: {e}. Fallback to General Knowledge.")
+            logger.error(f"Error in GraphCypherQAChain: {e}. Fallback to General Knowledge.")
             return self.fallback_to_general_knowledge(question)
 
     def fallback_to_general_knowledge(self, question: str) -> str:
         """
         Fallback to use the LLM directly for general medical knowledge.
         """
-        messages = [
-            ("system", "You are a helpful medical assistant. The user asked a question that could not be answered by the local database. Please use your general medical knowledge to answer the question professionally and responsibly. If it involves serious medical conditions, advise visiting a doctor."),
-            ("human", question),
-        ]
-        response = self.llm.invoke(messages)
-        return response.content
+        try:
+            logger.info(f"Using LLM fallback for question: {question}")
+            messages = [
+                ("system", "You are a helpful medical assistant. The user asked a question that could not be answered by the local database. Please use your general medical knowledge to answer the question professionally and responsibly. If it involves serious medical conditions, advise visiting a doctor."),
+                ("human", question),
+            ]
+            response = self.llm.invoke(messages)
+            logger.info("LLM fallback answer generated successfully")
+            return response.content
+        except Exception as e:
+            logger.error(f"LLM fallback failed: {e}")
+            return "抱歉，我无法回答这个问题。建议您咨询专业医生。"
 
 # Singleton instance for easy import
 qa_chain = MedicalQAChain()

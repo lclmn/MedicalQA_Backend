@@ -15,11 +15,16 @@ __pycache__/
 .idea/
 *.iml
 
+# VSCode
+.vscode/
+
 # 环境变量
 .env
 .env.local
+.env.production
 
 # 日志
+logs/
 *.log
 
 # 数据库
@@ -34,3 +39,10 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# 测试覆盖率
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints
