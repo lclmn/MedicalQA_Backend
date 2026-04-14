@@ -200,10 +200,57 @@ def medical_answer():
         logger.info(f"Received question: {question}")
         answer = get_answer(question)
         logger.info("Answer generated successfully")
+        
+        # Try to save conversation if user is authenticated
+        conversation_id = request.args.get('conversation_id')
+        if conversation_id and 'Authorization' in request.headers:
+            try:
+                from utils.auth import decode_token
+                from utils.db_utils import get_db_connection
+                auth_header = request.headers['Authorization']
+                token = auth_header.split(" ")[1] if " " in auth_header else None
+                if token:
+                    payload = decode_token(token)
+                    if payload:
+                        user_id = payload.get('user_id')
+                        username = payload.get('username')
+                        # Save conversation as JSON format: {"username": "...", "AI": "..."}
+                        _save_conversation_to_db(user_id, username, conversation_id, question, answer)
+                        logger.info(f"Conversation saved for user_id={user_id}, conversation_id={conversation_id}")
+            except Exception as e:
+                logger.warning(f"Failed to save conversation: {e}")
+        
         return jsonify({'answer': answer})
     except Exception as e:
         logger.error(f"Error in medical_answer: {e}")
         return jsonify({'error': 'Failed to generate answer'}), 500
+
+
+def _save_conversation_to_db(user_id, username, conversation_id, question, answer):
+    """
+    Helper function to save conversation to database
+    Format: {"username": "问题内容", "AI": "AI回答内容"}
+    """
+    try:
+        import json
+        from utils.db_utils import get_db_connection
+        connection = get_db_connection()
+        try:
+            with connection.cursor() as cursor:
+                # Create JSON object with username and AI response
+                conversation_data = json.dumps({
+                    username: question,
+                    "AI": answer
+                }, ensure_ascii=False)
+                
+                insert_query = "INSERT INTO conversations (user_id, username, conversation_id, conversation_data) VALUES (%s, %s, %s, %s)"
+                cursor.execute(insert_query, (user_id, username, conversation_id, conversation_data))
+                connection.commit()
+        finally:
+            connection.close()
+    except Exception as e:
+        logger.error(f"Error saving conversation: {e}")
+        raise
 
 @app.route('/get_analysis_data', methods=['GET'])
 def get_analysis_data():

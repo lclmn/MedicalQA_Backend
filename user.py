@@ -285,3 +285,211 @@ def adminlogin():
     except Exception as e:
         logger.error(f"Admin login failed: {e}")
         return jsonify({'success': False, 'message': 'Login failed', 'error': str(e)}), 500
+
+
+@api_bp.route('/get_conversations', methods=['GET'])
+def get_conversations():
+    """
+    Get list of all conversations for the current user
+    Returns conversation IDs with their latest Q&A pair and timestamp
+    """
+    try:
+        # Get user_id from token
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({'success': False, 'message': 'Authorization token required'}), 401
+        
+        token = auth_header.split(" ")[1] if " " in auth_header else None
+        if not token:
+            return jsonify({'success': False, 'message': 'Invalid token format'}), 401
+        
+        from utils.auth import decode_token
+        payload = decode_token(token)
+        if not payload:
+            return jsonify({'success': False, 'message': 'Invalid or expired token'}), 401
+        
+        user_id = payload.get('user_id')
+        
+        connection = get_db_connection()
+        try:
+            with connection.cursor() as cursor:
+                # Get distinct conversations with their latest Q&A pair
+                query = """
+                SELECT 
+                    c.conversation_id,
+                    c.conversation_data,
+                    c.create_time as last_update,
+                    conv_counts.conv_count
+                FROM conversations c
+                INNER JOIN (
+                    SELECT 
+                        conversation_id,
+                        MAX(create_time) as max_time,
+                        COUNT(*) as conv_count
+                    FROM conversations
+                    WHERE user_id = %s
+                    GROUP BY conversation_id
+                ) conv_counts ON c.conversation_id = conv_counts.conversation_id AND c.create_time = conv_counts.max_time
+                WHERE c.user_id = %s
+                ORDER BY c.create_time DESC
+                """
+                cursor.execute(query, (user_id, user_id))
+                conversations = cursor.fetchall()
+                
+                # Format the response
+                import json
+                result = []
+                for conv in conversations:
+                    # Parse conversation_data JSON
+                    conv_data = json.loads(conv['conversation_data']) if isinstance(conv['conversation_data'], str) else conv['conversation_data']
+                    
+                    # Get the first key (username) and AI response for preview
+                    username = list(conv_data.keys())[0]
+                    user_question = conv_data[username]
+                    ai_answer = conv_data.get('AI', '')
+                    
+                    # Create preview text (use AI answer as it's more informative)
+                    preview = ai_answer[:100] + '...' if len(ai_answer) > 100 else ai_answer
+                    
+                    result.append({
+                        'conversation_id': conv['conversation_id'],
+                        'preview': preview,
+                        'last_update': conv['last_update'].strftime('%Y-%m-%d %H:%M:%S') if conv['last_update'] else None,
+                        'qa_count': conv['conv_count']
+                    })
+                
+                logger.info(f"Retrieved {len(result)} conversations for user_id={user_id}")
+                return jsonify({'success': True, 'conversations': result})
+        finally:
+            connection.close()
+    except Exception as e:
+        logger.error(f"Get conversations failed: {e}")
+        return jsonify({'success': False, 'message': 'Failed to retrieve conversations', 'error': str(e)}), 500
+
+
+@api_bp.route('/get_conversation_detail', methods=['GET'])
+def get_conversation_detail():
+    """
+    Get detailed Q&A history for a specific conversation
+    Query parameter: conversation_id
+    """
+    try:
+        conversation_id = request.args.get('conversation_id')
+        if not conversation_id:
+            return jsonify({'success': False, 'message': 'conversation_id is required'}), 400
+        
+        # Get user_id from token
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({'success': False, 'message': 'Authorization token required'}), 401
+        
+        token = auth_header.split(" ")[1] if " " in auth_header else None
+        if not token:
+            return jsonify({'success': False, 'message': 'Invalid token format'}), 401
+        
+        from utils.auth import decode_token
+        payload = decode_token(token)
+        if not payload:
+            return jsonify({'success': False, 'message': 'Invalid or expired token'}), 401
+        
+        user_id = payload.get('user_id')
+        
+        connection = get_db_connection()
+        try:
+            with connection.cursor() as cursor:
+                query = """
+                SELECT id, conversation_data, create_time
+                FROM conversations
+                WHERE user_id = %s AND conversation_id = %s
+                ORDER BY create_time ASC
+                """
+                cursor.execute(query, (user_id, conversation_id))
+                records = cursor.fetchall()
+                
+                # Format the response - convert JSON records to chat messages
+                import json
+                messages = []
+                for record in records:
+                    # Parse conversation_data JSON
+                    conv_data = json.loads(record['conversation_data']) if isinstance(record['conversation_data'], str) else record['conversation_data']
+                    
+                    # Extract username (first key) and AI response
+                    username = list(conv_data.keys())[0]
+                    user_question = conv_data[username]
+                    ai_answer = conv_data.get('AI', '')
+                    
+                    # Add user message
+                    messages.append({
+                        'role': 'user',
+                        'username': username,
+                        'content': user_question,
+                        'create_time': record['create_time'].strftime('%Y-%m-%d %H:%M:%S') if record['create_time'] else None
+                    })
+                    
+                    # Add AI message
+                    messages.append({
+                        'role': 'assistant',
+                        'content': ai_answer,
+                        'create_time': record['create_time'].strftime('%Y-%m-%d %H:%M:%S') if record['create_time'] else None
+                    })
+                
+                logger.info(f"Retrieved {len(messages)} messages for conversation_id={conversation_id}")
+                return jsonify({'success': True, 'messages': messages, 'conversation_id': conversation_id})
+        finally:
+            connection.close()
+    except Exception as e:
+        logger.error(f"Get conversation detail failed: {e}")
+        return jsonify({'success': False, 'message': 'Failed to retrieve conversation details', 'error': str(e)}), 500
+
+
+@api_bp.route('/delete_conversation', methods=['POST'])
+def delete_conversation():
+    """
+    Delete a specific conversation
+    Expected JSON body:
+    {
+        "conversation_id": "unique-conversation-id"
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data or 'conversation_id' not in data:
+            return jsonify({'success': False, 'message': 'conversation_id is required'}), 400
+        
+        conversation_id = data.get('conversation_id')
+        
+        # Get user_id from token
+        auth_header = request.headers.get('Authorization')
+        if not auth_header:
+            return jsonify({'success': False, 'message': 'Authorization token required'}), 401
+        
+        token = auth_header.split(" ")[1] if " " in auth_header else None
+        if not token:
+            return jsonify({'success': False, 'message': 'Invalid token format'}), 401
+        
+        from utils.auth import decode_token
+        payload = decode_token(token)
+        if not payload:
+            return jsonify({'success': False, 'message': 'Invalid or expired token'}), 401
+        
+        user_id = payload.get('user_id')
+        
+        connection = get_db_connection()
+        try:
+            with connection.cursor() as cursor:
+                delete_query = "DELETE FROM conversations WHERE user_id = %s AND conversation_id = %s"
+                cursor.execute(delete_query, (user_id, conversation_id))
+                connection.commit()
+                
+                deleted_count = cursor.rowcount
+                logger.info(f"Deleted conversation: user_id={user_id}, conversation_id={conversation_id}, rows={deleted_count}")
+                
+                if deleted_count == 0:
+                    return jsonify({'success': False, 'message': 'Conversation not found'}), 404
+                
+                return jsonify({'success': True, 'message': 'Conversation deleted successfully'})
+        finally:
+            connection.close()
+    except Exception as e:
+        logger.error(f"Delete conversation failed: {e}")
+        return jsonify({'success': False, 'message': 'Failed to delete conversation', 'error': str(e)}), 500

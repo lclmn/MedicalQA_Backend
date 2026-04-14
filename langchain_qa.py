@@ -113,6 +113,12 @@ Cypher: MATCH (i:ill {{name: '肺炎'}})-[:treated_by]->(m:cure_method) RETURN m
 Question: 治疗糖尿病要花多少钱？
 Cypher: MATCH (i:ill {{name: '糖尿病'}})-[:costs]->(c:cure_cost) RETURN c.name
 
+Question: 肺结核是否具有传染性？
+Cypher: MATCH (i:ill {{name: '肺结核'}})-[:is_infectious]->(inf:if_infect) RETURN inf.name
+
+Question: 流感的治愈率是多少？
+Cypher: MATCH (i:ill {{name: '流感'}})-[:has_cure_rate]->(r:cure_rate) RETURN r.name
+
 Note: Do not include any explanations or apologies in your responses.
 Do not respond to any questions that might ask anything else than for you to construct a Cypher statement.
 Do not include any text except the generated Cypher statement.
