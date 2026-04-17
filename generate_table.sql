@@ -9,9 +9,11 @@ CREATE TABLE IF NOT EXISTS `user` (
   password VARCHAR(255) NOT NULL COMMENT '密码（bcrypt加密）',
   age INT NULL COMMENT '年龄',
   gender VARCHAR(10) NULL COMMENT '性别',
+  phone_number VARCHAR(20) NULL COMMENT '手机号码',
   create_time DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   update_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  INDEX idx_username (username)
+  INDEX idx_username (username),
+  INDEX idx_phone_number (phone_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户信息表';
 
 -- 管理员表

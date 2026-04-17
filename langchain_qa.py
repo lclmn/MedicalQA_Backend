@@ -1,10 +1,15 @@
 import os
+import json
 from langchain_community.graphs import Neo4jGraph
 from langchain.chains import GraphCypherQAChain
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from config import Config
 from utils.logger import logger
+import hashlib
+import time
+import redis
+import pickle
 
 # Configuration from environment variables
 NEO4J_URI = Config.NEO4J_URI
@@ -78,13 +83,42 @@ class MedicalQAChain:
             refresh_schema=False
         )
         
-        # Initialize DeepSeek LLM
+        # Initialize DeepSeek LLM with optimized configuration
         self.llm = ChatOpenAI(
-            model="deepseek-chat",
+            model=Config.DEEPSEEK_MODEL or "deepseek-chat",
             openai_api_key=DEEPSEEK_API_KEY,
             openai_api_base=DEEPSEEK_BASE_URL,
-            temperature=0
+            temperature=0.1,  # Slightly higher for more natural responses
+            max_tokens=1024,  # Limit response length
+            request_timeout=30,  # Add timeout
+            max_retries=3  # Retry failed requests
         )
+        
+        # Hybrid cache: Redis (if available) + in-memory fallback
+        self._cache = {}
+        self._cache_ttl = 3600  # Cache TTL: 1 hour
+        
+        # Initialize Redis cache if available
+        self._redis_cache = None
+        try:
+            if Config.REDIS_HOST:
+                redis_params = {
+                    'host': Config.REDIS_HOST,
+                    'port': Config.REDIS_PORT,
+                    'db': Config.REDIS_DB + 1,  # Use separate DB for QA cache
+                    'decode_responses': False,
+                    'socket_connect_timeout': 5
+                }
+                
+                # Add password if configured
+                if Config.REDIS_PASSWORD:
+                    redis_params['password'] = Config.REDIS_PASSWORD
+                
+                self._redis_cache = redis.Redis(**redis_params)
+                self._redis_cache.ping()
+                logger.info("Redis cache initialized for QA chain")
+        except Exception as e:
+            logger.warning(f"Redis cache initialization failed: {e}. Using in-memory cache only.")
 
         # Cypher Generation Prompt with few-shot examples
         self.cypher_generation_template = """Task: Generate Cypher statement to query a graph database.
@@ -164,39 +198,142 @@ Helpful Answer:"""
             validate_cypher=False # Disable validation to avoid APOC issues
         )
 
-    def get_answer(self, question: str) -> str:
+    def _get_cache_key(self, question: str) -> str:
+        """Generate cache key from question"""
+        return f"qa:{hashlib.md5(question.encode('utf-8')).hexdigest()}"
+    
+    def _get_from_cache(self, question: str) -> dict:
+        """Get answer from cache if exists and not expired (Redis + memory)"""
+        cache_key = self._get_cache_key(question)
+        
+        # Try Redis first
+        if self._redis_cache:
+            try:
+                cached_data = self._redis_cache.get(cache_key)
+                if cached_data:
+                    result = pickle.loads(cached_data)
+                    logger.info(f"Redis cache hit for question: {question[:50]}...")
+                    return result
+            except Exception as e:
+                logger.warning(f"Redis cache get error: {e}")
+        
+        # Fallback to in-memory cache
+        if cache_key in self._cache:
+            cached_data = self._cache[cache_key]
+            if time.time() - cached_data['timestamp'] < self._cache_ttl:
+                logger.info(f"Memory cache hit for question: {question[:50]}...")
+                return cached_data['data']
+            else:
+                # Remove expired cache
+                del self._cache[cache_key]
+        
+        return None
+    
+    def _save_to_cache(self, question: str, answer_data: dict):
+        """Save answer to cache (Redis + memory)"""
+        cache_key = self._get_cache_key(question)
+        
+        # Save to Redis
+        if self._redis_cache:
+            try:
+                self._redis_cache.setex(
+                    cache_key,
+                    self._cache_ttl,
+                    pickle.dumps(answer_data)
+                )
+            except Exception as e:
+                logger.warning(f"Redis cache set error: {e}")
+        
+        # Also save to in-memory cache as fallback
+        self._cache[cache_key] = {
+            'data': answer_data,
+            'timestamp': time.time()
+        }
+    
+    def get_answer(self, question: str) -> dict:
         """
         Get answer from Neo4j KG. If no answer found, fallback to LLM general knowledge.
+        Returns dict with answer and metadata
         """
         try:
             logger.info(f"Processing question: {question}")
-            # Try to get answer from KG
-            response = self.chain.invoke({"query": question})
             
-            if isinstance(response, dict):
-                result = response.get("result", "").strip()
-            else:
-                 # Fallback if run() was used or different return
-                result = str(response).strip()
+            # Check cache first
+            cached_answer = self._get_from_cache(question)
+            if cached_answer:
+                return cached_answer
+            
+            # Try to get answer from KG with retry logic
+            max_retries = 2
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = self.chain.invoke({"query": question})
+                    
+                    if isinstance(response, dict):
+                        result = response.get("result", "").strip()
+                        cypher_query = response.get("intermediate_steps", [{}])[0].get("query", "") if response.get("intermediate_steps") else ""
+                    else:
+                        result = str(response).strip()
+                        cypher_query = ""
 
-            # Check for "I don't know" or similar failure responses from the QA chain
-            # Check for both English and Chinese refusal phrases
-            fallback_triggers = [
-                "don't know", "no information", 
-                "不清楚", "不知道", "无法提供", "没有相关信息", "没有足够的信息"
-            ]
-            
-            should_fallback = not result or any(trigger in result.lower() for trigger in fallback_triggers)
+                    # Check for "I don't know" or similar failure responses
+                    fallback_triggers = [
+                        "don't know", "no information", 
+                        "不清楚", "不知道", "无法提供", "没有相关信息", "没有足够的信息"
+                    ]
+                    
+                    should_fallback = not result or any(trigger in result.lower() for trigger in fallback_triggers)
 
-            if should_fallback:
-                logger.info(f"KG failed to answer. Fallback to General Knowledge for: {question}")
-                return self.fallback_to_general_knowledge(question)
+                    if should_fallback:
+                        logger.info(f"KG failed to answer. Fallback to General Knowledge for: {question}")
+                        fallback_answer = self.fallback_to_general_knowledge(question)
+                        result_data = {
+                            'answer': fallback_answer,
+                            'source': 'llm_fallback',
+                            'confidence': 'medium'
+                        }
+                    else:
+                        logger.info(f"Successfully answered from KG (attempt {attempt + 1})")
+                        result_data = {
+                            'answer': result,
+                            'source': 'knowledge_graph',
+                            'confidence': 'high',
+                            'cypher_query': cypher_query
+                        }
+                    
+                    # Cache the result
+                    self._save_to_cache(question, result_data)
+                    return result_data
+                    
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # Wait before retry
+                    continue
             
-            logger.info(f"Successfully answered from KG")
-            return result
+            # All retries failed, use fallback
+            logger.error(f"All KG attempts failed. Last error: {last_error}. Using LLM fallback.")
+            fallback_answer = self.fallback_to_general_knowledge(question)
+            result_data = {
+                'answer': fallback_answer,
+                'source': 'llm_error_fallback',
+                'confidence': 'low'
+            }
+            self._save_to_cache(question, result_data)
+            return result_data
+            
         except Exception as e:
-            logger.error(f"Error in GraphCypherQAChain: {e}. Fallback to General Knowledge.")
-            return self.fallback_to_general_knowledge(question)
+            logger.error(f"Unexpected error in get_answer: {e}", exc_info=True)
+            # Final fallback
+            fallback_answer = self.fallback_to_general_knowledge(question)
+            return {
+                'answer': fallback_answer,
+                'source': 'llm_error_fallback',
+                'confidence': 'low'
+            }
 
     def fallback_to_general_knowledge(self, question: str) -> str:
         """
@@ -219,4 +356,37 @@ Helpful Answer:"""
 qa_chain = MedicalQAChain()
 
 def get_answer(question):
-    return qa_chain.get_answer(question)
+    """
+    Get answer from QA chain
+    Returns dict with answer and metadata for backward compatibility
+    """
+    result = qa_chain.get_answer(question)
+    # For backward compatibility, if caller expects just string
+    if isinstance(result, dict):
+        return result
+    return {'answer': result, 'source': 'unknown', 'confidence': 'unknown'}
+
+def get_search_suggestions(keyword: str, limit: int = 10) -> list:
+    """
+    Get disease name suggestions based on keyword
+    Used for autocomplete/search suggestions
+    """
+    try:
+        from utils.neo4j_utils import execute_cypher_query
+        
+        # Search for diseases matching the keyword with parameterized query
+        query = """
+        MATCH (i:ill)
+        WHERE i.name CONTAINS $keyword
+        RETURN i.name as name
+        ORDER BY size(i.name)
+        LIMIT $limit
+        """
+        result = execute_cypher_query(query, {'keyword': keyword, 'limit': limit}, read_only=True)
+        suggestions = [record['name'] for record in result if record.get('name')]
+        
+        logger.info(f"Found {len(suggestions)} suggestions for keyword: {keyword}")
+        return suggestions
+    except Exception as e:
+        logger.error(f"Error getting search suggestions: {e}", exc_info=True)
+        return []

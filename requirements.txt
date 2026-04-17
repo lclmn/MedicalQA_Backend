@@ -21,3 +21,5 @@ bcrypt==4.1.2
 PyJWT==2.8.0
 DBUtils==3.1.0
 flask-limiter==3.5.0
+redis==5.0.4
+

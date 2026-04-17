@@ -1,781 +1,1100 @@
-# 医疗问答系统 - 前端 API 调用文档
+# 医疗智能问答系统 - 后端API接口文档
 
-**版本**: v2.0  
-**基础 URL**: `http://127.0.0.1:5001`  
-**最后更新**: 2026-04-14  
-**适用对象**: 前端开发人员
+## 重要提示
 
----
+**所有用户相关接口均已添加 `/api` 前缀！**
 
-## 📋 目录
+例如：
+- ✅ 正确：`POST /api/send_verification_code`
+- ❌ 错误：`POST /send_verification_code`
 
-- [快速开始](#快速开始)
-- [认证机制](#认证机制)
-- [核心接口](#核心接口)
-  - [用户认证](#用户认证)
-  - [智能问答（含自动保存）](#智能问答)
-  - [对话历史管理](#对话历史管理)
-- [完整示例](#完整示例)
-- [常见问题](#常见问题)
-
----
-
-## 🚀 快速开始
-
-### 1. 登录获取 Token
-
-```javascript
-const loginResponse = await fetch('http://127.0.0.1:5001/login', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    username: 'your_username',
-    password: 'your_password'
-  })
-});
-
-const loginData = await loginResponse.json();
-const token = loginData.user.token;
-
-// 保存 token
-localStorage.setItem('token', token);
-```
-
-### 2. 发送问题（自动保存对话）
-
-```javascript
-// 生成唯一的会话 ID
-const conversationId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-
-// 发送问题
-const question = '感冒有哪些症状？';
-const response = await fetch(
-  `http://127.0.0.1:5001/question?question=${encodeURIComponent(question)}&conversation_id=${conversationId}`,
-  {
-    headers: {
-      'Authorization': `Bearer ${token}`
-    }
-  }
-);
-
-const data = await response.json();
-console.log('AI回答:', data.answer);
-// ✅ 问题和回答已自动保存到数据库
-```
-
-### 3. 获取历史对话列表
-
-```javascript
-const convResponse = await fetch('http://127.0.0.1:5001/get_conversations', {
-  headers: {
-    'Authorization': `Bearer ${token}`
-  }
-});
-
-const convData = await convResponse.json();
-console.log('对话列表:', convData.conversations);
-```
+## 目录
+- [基础信息](#基础信息)
+- [认证相关接口](#认证相关接口)
+- [用户管理接口](#用户管理接口)
+- [医疗问答接口](#医疗问答接口)
+- [疾病信息查询接口](#疾病信息查询接口)
+- [对话历史管理接口](#对话历史管理接口)
+- [数据分析接口](#数据分析接口)
+- [系统健康检查](#系统健康检查)
 
 ---
 
-## 🔐 认证机制
+## 基础信息
 
-### JWT Token 认证
+### 服务器地址
+```
+开发环境: http://localhost:5001
+生产环境: https://your-domain.com
+```
 
-所有需要用户身份的接口都需要在请求头中携带 Token。
+### 通用响应格式
 
-**获取 Token**：
-- 调用 `/login` 或 `/Adminlogin` 接口
-- Token 有效期：3600 秒（1 小时）
-
-**使用 Token**：
-```javascript
-headers: {
-  'Authorization': `Bearer ${token}`
+**成功响应:**
+```json
+{
+  "success": true,
+  "message": "操作成功",
+  "data": { ... }
 }
 ```
 
-**Token 过期处理**：
-```javascript
-if (response.status === 401) {
-  // Token 过期，跳转到登录页
-  localStorage.removeItem('token');
-  window.location.href = '/login';
+**失败响应:**
+```json
+{
+  "success": false,
+  "message": "错误描述",
+  "error_code": "ERROR_CODE",
+  "details": "详细错误信息（仅开发环境）"
+}
+```
+
+### 认证方式
+需要在请求头中携带JWT Token：
+```
+Authorization: Bearer <your_jwt_token>
+```
+
+---
+
+## 认证相关接口
+
+### 1. 发送验证码
+
+**接口地址:** `POST /api/send_verification_code`
+
+**请求示例:**
+```bash
+curl -X POST http://localhost:5001/api/send_verification_code \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "13800138000"}'
+```
+
+**请求参数:**
+```json
+{
+  "phone_number": "13800138000"
+}
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| phone_number | string | 是 | 手机号码（支持+86前缀） |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "验证码发送成功，请注意查收"
+}
+```
+
+**⚠️ 重要：查看验证码方式**
+
+由于当前使用的是**模拟短信服务**（开发环境），验证码不会真的发送到手机，而是打印在：
+
+1. **控制台输出**：
+```
+INFO - 📱 模拟发送验证码 → 13800138000，验证码：123456
+```
+
+2. **日志文件**：`logs/app.log`
+
+生产环境可替换为真实的阿里云短信服务。
+
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "手机号格式不正确",
+  "error_code": "VALIDATION_ERROR"
 }
 ```
 
 ---
 
-## 📡 核心接口
+### 2. 验证验证码
 
-### 用户认证
+**接口地址:** `POST /api/check_verification_code`
 
-#### 1. 用户登录
+**请求示例:**
+```bash
+curl -X POST http://localhost:5001/api/check_verification_code \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number": "13800138000", "code": "123456"}'
+```
 
-**接口**: `POST /login`
+**请求参数:**
+```json
+{
+  "phone_number": "13800138000",
+  "code": "123456"
+}
+```
 
-**请求体**:
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| phone_number | string | 是 | 手机号码 |
+| code | string | 是 | 6位验证码 |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "验证成功"
+}
+```
+
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "验证码已过期",
+  "error_code": "CODE_EXPIRED"
+}
+```
+
+---
+
+### 3. 用户注册
+
+**接口地址:** `POST /api/register`
+
+**请求示例:**
+```bash
+curl -X POST http://localhost:5001/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "张三",
+    "password": "Password123",
+    "phone_number": "13800138000",
+    "verification_code": "123456",
+    "age": 25,
+    "gender": "男"
+  }'
+```
+
+**请求参数:**
 ```json
 {
   "username": "张三",
-  "password": "password123"
+  "password": "Password123",
+  "phone_number": "13800138000",
+  "verification_code": "123456",
+  "age": 25,
+  "gender": "男"
 }
 ```
 
-**响应**:
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| username | string | 是 | 用户名（3-50字符，支持中文） |
+| password | string | 是 | 密码（至少8位，包含大小写字母和数字） |
+| phone_number | string | 是 | 手机号码 |
+| verification_code | string | 是 | 短信验证码 |
+| age | integer | 是 | 年龄（1-150） |
+| gender | string | 是 | 性别（男/女/其他/male/female/other） |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "注册成功"
+}
+```
+
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "该手机号已被注册",
+  "error_code": "PHONE_EXISTS"
+}
+```
+
+---
+
+### 4. 用户登录
+
+**接口地址:** `POST /api/login`
+
+**请求示例:**
+```bash
+curl -X POST http://localhost:5001/api/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "张三",
+    "password": "Password123",
+    "phone_number": "13800138000",
+    "verification_code": "123456"
+  }'
+```
+
+**请求参数:**
+```json
+{
+  "username": "张三",
+  "password": "Password123",
+  "phone_number": "13800138000",
+  "verification_code": "123456"
+}
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| username | string | 是 | 用户名 |
+| password | string | 是 | 密码 |
+| phone_number | string | 是 | 手机号码 |
+| verification_code | string | 是 | 短信验证码 |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "登录成功",
+  "data": {
+    "user": {
+      "id": 1,
+      "username": "张三",
+      "phone_number": "13800138000",
+      "age": 25,
+      "gender": "男",
+      "create_time": "2024-01-01 12:00:00",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    }
+  }
+}
+```
+
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "用户名、手机号或密码错误",
+  "error_code": "INVALID_CREDENTIALS"
+}
+```
+
+---
+
+### 5. 管理员登录
+
+**接口地址:** `POST /api/Adminlogin`
+
+**请求参数:**
+```json
+{
+  "username": "admin",
+  "password": "AdminPass123"
+}
+```
+
+**返回示例:**
 ```json
 {
   "success": true,
   "user": {
     "id": 1,
-    "username": "张三",
-    "age": 25,
-    "gender": "male",
-    "create_time": "2026-04-14 10:00:00",
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-  }
-}
-```
-
-**前端使用**:
-```javascript
-async function login(username, password) {
-  const response = await fetch('http://127.0.0.1:5001/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  });
-  
-  const data = await response.json();
-  
-  if (data.success) {
-    localStorage.setItem('token', data.user.token);
-    localStorage.setItem('username', data.user.username);
-    return data.user;
-  } else {
-    throw new Error(data.error || '登录失败');
+    "adminname": "admin",
+    "create_time": "2024-01-01 12:00:00",
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "is_admin": true
   }
 }
 ```
 
 ---
 
-#### 2. 用户注册
+## 用户管理接口
 
-**接口**: `POST /register`
+### 6. 获取用户列表
 
-**请求体**:
-```json
-{
-  "username": "新用户",
-  "password": "password123",
-  "age": 25,
-  "gender": "male"
-}
+**接口地址:** `GET /api/get_users`
+
+**请求头:**
+```
+Authorization: Bearer <admin_token>
 ```
 
-**响应**:
+**返回示例:**
 ```json
 {
   "success": true,
-  "message": "Registration successful"
+  "users": [
+    {
+      "id": 1,
+      "username": "张三",
+      "age": 25,
+      "gender": "男",
+      "create_time": "2024-01-01 12:00:00"
+    },
+    {
+      "id": 2,
+      "username": "李四",
+      "age": 30,
+      "gender": "女",
+      "create_time": "2024-01-02 14:30:00"
+    }
+  ]
 }
 ```
 
 ---
 
-### 智能问答
+### 7. 添加用户（管理员）
 
-#### 3. 发送问题（⭐ 核心接口）
+**接口地址:** `POST /api/add_users`
 
-**接口**: `GET /question`
-
-**重要**: 此接口会**自动保存**对话到数据库，无需手动调用保存接口！
-
-**查询参数**:
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| question | string | 是 | 用户的问题 |
-| conversation_id | string | 推荐 | 会话ID，用于关联对话历史 |
-
-**请求头**:
+**请求头:**
 ```
-Authorization: Bearer <token>
+Authorization: Bearer <admin_token>
 ```
 
-**响应**:
+**请求示例:**
+```bash
+curl -X POST http://localhost:5001/api/add_users \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin_token>" \
+  -d '{
+    "username": "王五",
+    "password": "Password123",
+    "phone_number": "13900139000",
+    "gender": "男",
+    "age": 28
+  }'
+```
+
+**请求参数:**
 ```json
 {
-  "answer": "感冒的常见症状包括流鼻涕、咳嗽、喉咙痛等..."
+  "username": "王五",
+  "password": "Password123",
+  "phone_number": "13900139000",
+  "gender": "男",
+  "age": 28
 }
 ```
 
-**前端完整示例**:
-```javascript
-class ChatService {
-  constructor() {
-    this.currentConversationId = null;
-    this.token = localStorage.getItem('token');
-  }
-  
-  // 生成新的会话 ID
-  generateConversationId() {
-    return 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-  }
-  
-  // 发送消息
-  async sendMessage(question) {
-    // 如果没有当前会话，创建新会话
-    if (!this.currentConversationId) {
-      this.currentConversationId = this.generateConversationId();
-    }
-    
-    const url = `http://127.0.0.1:5001/question?question=${encodeURIComponent(question)}&conversation_id=${this.currentConversationId}`;
-    
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${this.token}`
-        }
-      });
-      
-      if (response.status === 401) {
-        // Token 过期
-        this.handleTokenExpired();
-        return null;
-      }
-      
-      const data = await response.json();
-      
-      if (data.answer) {
-        return {
-          success: true,
-          answer: data.answer,
-          conversationId: this.currentConversationId
-        };
-      } else {
-        return {
-          success: false,
-          error: data.error || '获取回答失败'
-        };
-      }
-    } catch (error) {
-      console.error('发送消息失败:', error);
-      return {
-        success: false,
-        error: '网络错误'
-      };
-    }
-  }
-  
-  // 开始新对话
-  startNewConversation() {
-    this.currentConversationId = this.generateConversationId();
-    return this.currentConversationId;
-  }
-  
-  // 处理 Token 过期
-  handleTokenExpired() {
-    localStorage.removeItem('token');
-    localStorage.removeItem('username');
-    window.location.href = '/login';
-  }
-}
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| username | string | 是 | 用户名（3-50字符，支持中文） |
+| password | string | 是 | 密码（至少8位，包含大小写字母和数字） |
+| phone_number | string | 是 | 手机号码 |
+| gender | string | 是 | 性别（男/女/其他/male/female/other） |
+| age | integer | 否 | 年龄（1-150，可不填） |
 
-// 使用示例
-const chatService = new ChatService();
-
-// 发送消息
-const result = await chatService.sendMessage('肺结核会传染吗？');
-if (result.success) {
-  console.log('AI回答:', result.answer);
-  console.log('会话ID:', result.conversationId);
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "添加成功"
 }
 ```
 
-**注意事项**:
-- ✅ 必须携带 `Authorization` header
-- ✅ 建议携带 `conversation_id` 参数以保存对话历史
-- ✅ 问题和回答会自动保存到 `conversations` 表
-- ❌ **不要**手动调用 `/save_conversation` 接口（已废弃）
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "用户名已存在",
+  "error_code": "USER_EXISTS"
+}
+```
+
+或者：
+```json
+{
+  "success": false,
+  "message": "该手机号已被注册",
+  "error_code": "PHONE_EXISTS"
+}
+```
 
 ---
 
-### 对话历史管理
+### 8. 更新用户信息
 
-#### 4. 获取对话列表
+**接口地址:** `POST /api/update_user`
 
-**接口**: `GET /get_conversations`
+**请求参数:**
+```json
+{
+  "id": 1,
+  "username": "张三丰",
+  "password": "NewPassword123",
+  "age": 26,
+  "gender": "男"
+}
+```
 
-**请求头**:
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| id | integer | 是 | 用户ID |
+| username | string | 是 | 新用户名 |
+| password | string | 否 | 新密码（不提供则不修改） |
+| age | integer | 是 | 新年龄 |
+| gender | string | 是 | 新性别 |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "更新成功"
+}
+```
+
+---
+
+### 9. 删除用户
+
+**接口地址:** `POST /api/delete_user`
+
+**请求参数:**
+```json
+{
+  "id": 1
+}
+```
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "删除成功"
+}
+```
+
+---
+
+### 10. 批量删除用户
+
+**接口地址:** `POST /api/batch_delete_users`
+
+**请求参数:**
+```json
+{
+  "user_ids": [1, 2, 3]
+}
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| user_ids | array | 是 | 用户ID数组（最多100个） |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "已删除 3 个用户",
+  "deleted_count": 3
+}
+```
+
+---
+
+## 医疗问答接口
+
+### 11. 智能问答
+
+**接口地址:** `GET /question`
+
+**限流:** 30次/分钟
+
+**请求参数:**
+```
+GET /question?question=感冒的症状是什么？&conversation_id=unique-id-123
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| question | string | 是 | 医疗问题（2-500字符） |
+| conversation_id | string | 否 | 会话ID（用于保存对话历史） |
+
+**请求头（可选）:**
 ```
 Authorization: Bearer <token>
 ```
 
-**响应**:
+**返回示例:**
+```json
+{
+  "answer": "感冒的常见症状包括：\n\n1. 鼻塞、流鼻涕\n2. 喉咙痛\n3. 咳嗽\n4. 轻微发热\n5. 头痛\n6. 全身乏力\n\n建议您多休息，多喝水。如果症状持续加重或出现高烧，请及时就医。",
+  "source": "knowledge_graph",
+  "confidence": "high"
+}
+```
+
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| answer | string | AI回答内容 |
+| source | string | 答案来源（knowledge_graph/llm_fallback/llm_error_fallback） |
+| confidence | string | 置信度（high/medium/low） |
+
+**错误示例:**
+```json
+{
+  "error": "问题不能为空"
+}
+```
+
+---
+
+### 12. 搜索建议
+
+**接口地址:** `GET /search_suggestions`
+
+**限流:** 60次/分钟
+
+**请求参数:**
+```
+GET /search_suggestions?keyword=感冒&limit=10
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| keyword | string | 是 | 搜索关键词（1-50字符） |
+| limit | integer | 否 | 返回数量（默认10，最大20） |
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "suggestions": [
+    "感冒",
+    "感冒咳嗽",
+    "流行性感冒",
+    "普通感冒"
+  ],
+  "count": 4
+}
+```
+
+---
+
+## 疾病信息查询接口
+
+### 13. 获取疾病详细信息
+
+**接口地址:** `GET /get_ill_info`
+
+**请求参数:**
+```
+GET /get_ill_info?ill=感冒
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| ill | string | 是 | 疾病名称 |
+
+**返回示例:**
+```json
+[
+  {
+    "data": {
+      "name": "感冒",
+      "source_link": "https://tag.120ask.com/jibing/ganmao.html",
+      "symptom": "鼻塞, 流鼻涕, 喉咙痛, 咳嗽, 发热",
+      "department": "呼吸内科, 内科",
+      "class1": "呼吸系统疾病",
+      "class2": "上呼吸道感染",
+      "easy_ill_people": "所有人群",
+      "cure_method": "对症治疗, 休息, 多饮水",
+      "cure_cost": "100-500元",
+      "if_infect": "是",
+      "ill_proportion": "常见",
+      "cure_rate": "95%",
+      "healing_cycle": "5-7天"
+    }
+  }
+]
+```
+
+**错误示例:**
+```json
+{
+  "error": "疾病名称不能为空"
+}
+```
+
+---
+
+### 14. 获取知识图谱数据
+
+**接口地址:** `GET /get_graph`
+
+**请求参数:**
+```
+GET /get_graph?ill=感冒
+```
+
+**参数说明:**
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| ill | string | 否 | 疾病名称（不提供则返回全部图谱） |
+
+**返回示例:**
+```json
+{
+  "graph_data": [
+    {
+      "name": "感冒",
+      "symbolSize": 50,
+      "category": "ill"
+    },
+    {
+      "name": "鼻塞",
+      "symbolSize": 50,
+      "category": "symptom"
+    },
+    {
+      "name": "呼吸内科",
+      "symbolSize": 50,
+      "category": "department"
+    }
+  ],
+  "links": [
+    {
+      "source": "感冒",
+      "target": "鼻塞",
+      "name": "has_symptom"
+    },
+    {
+      "source": "感冒",
+      "target": "呼吸内科",
+      "name": "should_see"
+    }
+  ],
+  "labels": [
+    {"name": "ill"},
+    {"name": "symptom"},
+    {"name": "department"}
+  ],
+  "stats": {
+    "node_count": 15,
+    "link_count": 20,
+    "category_count": 5
+  }
+}
+```
+
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| graph_data | array | 节点数据（name: 节点名称, symbolSize: 节点大小, category: 节点类型） |
+| links | array | 关系数据（source: 源节点, target: 目标节点, name: 关系类型） |
+| labels | array | 节点类型列表 |
+| stats | object | 统计信息（node_count: 节点数, link_count: 关系数, category_count: 类型数） |
+
+---
+
+## 对话历史管理接口
+
+### 15. 获取对话列表
+
+**接口地址:** `GET /api/get_conversations`
+
+**请求头:**
+```
+Authorization: Bearer <token>
+```
+
+**返回示例:**
 ```json
 {
   "success": true,
   "conversations": [
     {
-      "conversation_id": "conv_1713081234567_abc123",
-      "preview": "肺结核具有传染性，主要通过空气传播...",
-      "last_update": "2026-04-14 13:50:07",
+      "conversation_id": "conv-20240101-001",
+      "preview": "感冒的常见症状包括鼻塞、流鼻涕、喉咙痛等...",
+      "last_update": "2024-01-01 15:30:00",
       "qa_count": 5
     },
     {
-      "conversation_id": "conv_1713081200000_xyz789",
-      "preview": "感冒通常由病毒引起，症状包括...",
-      "last_update": "2026-04-14 12:30:00",
+      "conversation_id": "conv-20240102-002",
+      "preview": "糖尿病是一种慢性代谢性疾病...",
+      "last_update": "2024-01-02 10:20:00",
       "qa_count": 3
     }
   ]
 }
 ```
 
-**字段说明**:
-- `conversation_id`: 会话唯一标识
-- `preview`: 最后一次 AI 回答的预览（最多100字符）
-- `last_update`: 最后更新时间
-- `qa_count`: 该会话中的问答对数量
-
-**前端使用**:
-```javascript
-async function loadConversationList() {
-  const token = localStorage.getItem('token');
-  
-  try {
-    const response = await fetch('http://127.0.0.1:5001/get_conversations', {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      // 渲染侧边栏对话列表
-      renderSidebar(data.conversations);
-    }
-  } catch (error) {
-    console.error('加载对话列表失败:', error);
-  }
-}
-
-function renderSidebar(conversations) {
-  const sidebar = document.getElementById('conversation-sidebar');
-  sidebar.innerHTML = '';
-  
-  conversations.forEach(conv => {
-    const item = document.createElement('div');
-    item.className = 'conversation-item';
-    item.innerHTML = `
-      <div class="preview">${conv.preview}</div>
-      <div class="time">${conv.last_update}</div>
-      <div class="count">${conv.qa_count} 条对话</div>
-    `;
-    item.onclick = () => loadConversationDetail(conv.conversation_id);
-    sidebar.appendChild(item);
-  });
-}
-```
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| conversation_id | string | 会话ID |
+| preview | string | 最后一条AI回答预览（最多100字符） |
+| last_update | string | 最后更新时间 |
+| qa_count | integer | 该会话中的问答对数量 |
 
 ---
 
-#### 5. 获取对话详情
+### 16. 获取对话详情
 
-**接口**: `GET /get_conversation_detail`
+**接口地址:** `GET /api/get_conversation_detail`
 
-**查询参数**:
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| conversation_id | string | 是 | 会话ID |
-
-**请求头**:
+**请求头:**
 ```
 Authorization: Bearer <token>
 ```
 
-**响应**:
+**请求参数:**
+```
+GET /api/get_conversation_detail?conversation_id=conv-20240101-001
+```
+
+**返回示例:**
 ```json
 {
   "success": true,
-  "conversation_id": "conv_1713081234567_abc123",
   "messages": [
     {
       "role": "user",
       "username": "张三",
-      "content": "肺结核会传染吗？",
-      "create_time": "2026-04-14 13:50:07"
+      "content": "感冒的症状是什么？",
+      "create_time": "2024-01-01 15:20:00"
     },
     {
       "role": "assistant",
-      "content": "肺结核具有传染性，主要通过空气传播。当患者咳嗽、打喷嚏或说话时，会将含有结核菌的飞沫排到空气中...",
-      "create_time": "2026-04-14 13:50:07"
+      "content": "感冒的常见症状包括：\n\n1. 鼻塞、流鼻涕\n2. 喉咙痛\n3. 咳嗽...",
+      "create_time": "2024-01-01 15:20:05"
     },
     {
       "role": "user",
       "username": "张三",
-      "content": "怎么预防？",
-      "create_time": "2026-04-14 13:51:00"
+      "content": "需要吃什么药？",
+      "create_time": "2024-01-01 15:25:00"
     },
     {
       "role": "assistant",
-      "content": "预防肺结核的方法包括：接种卡介苗、保持良好通风、避免与患者密切接触...",
-      "create_time": "2026-04-14 13:51:00"
+      "content": "感冒通常是病毒感染，一般不需要抗生素...",
+      "create_time": "2024-01-01 15:25:08"
     }
+  ],
+  "conversation_id": "conv-20240101-001"
+}
+```
+
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| messages | array | 消息列表 |
+| messages[].role | string | 角色（user/assistant） |
+| messages[].username | string | 用户名（仅user角色） |
+| messages[].content | string | 消息内容 |
+| messages[].create_time | string | 创建时间 |
+
+---
+
+### 17. 删除对话
+
+**接口地址:** `POST /api/delete_conversation`
+
+**请求头:**
+```
+Authorization: Bearer <token>
+```
+
+**请求参数:**
+```json
+{
+  "conversation_id": "conv-20240101-001"
+}
+```
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "对话删除成功"
+}
+```
+
+**错误示例:**
+```json
+{
+  "success": false,
+  "message": "对话不存在"
+}
+```
+
+---
+
+### 18. 清空所有对话
+
+**接口地址:** `POST /api/clear_all_conversations`
+
+**请求头:**
+```
+Authorization: Bearer <token>
+```
+
+**返回示例:**
+```json
+{
+  "success": true,
+  "message": "已清空 10 个对话",
+  "deleted_count": 10
+}
+```
+
+---
+
+## 数据分析接口
+
+### 19. 获取分析数据
+
+**接口地址:** `GET /get_analysis_data`
+
+**返回示例:**
+```json
+{
+  "node_counts": [
+    {"name": "疾病", "value": 1250},
+    {"name": "症状", "value": 3500},
+    {"name": "科室", "value": 85},
+    {"name": "治疗方法", "value": 420}
+  ],
+  "class1_ill_counts": [
+    {"name": "呼吸系统疾病", "value": 180},
+    {"name": "消化系统疾病", "value": 150},
+    {"name": "心血管疾病", "value": 120},
+    {"name": "神经系统疾病", "value": 95}
+  ],
+  "infectious_counts": [
+    {"name": "是", "value": 320},
+    {"name": "否", "value": 930}
+  ],
+  "healing_cycle_counts": [
+    {"name": "1-2周", "value": 450},
+    {"name": "3-4周", "value": 280},
+    {"name": "1-3个月", "value": 180},
+    {"name": "长期治疗", "value": 120}
   ]
 }
 ```
 
-**前端使用**:
-```javascript
-async function loadConversationDetail(conversationId) {
-  const token = localStorage.getItem('token');
-  
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:5001/get_conversation_detail?conversation_id=${conversationId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      }
-    );
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      // 清空当前聊天界面
-      clearChatUI();
-      
-      // 渲染所有消息
-      data.messages.forEach(msg => {
-        displayMessage(msg.role, msg.content, msg.create_time);
-      });
-      
-      // 设置当前会话 ID
-      currentConversationId = conversationId;
-    }
-  } catch (error) {
-    console.error('加载对话详情失败:', error);
-  }
-}
-
-function displayMessage(role, content, time) {
-  const messagesDiv = document.getElementById('messages');
-  const msgDiv = document.createElement('div');
-  msgDiv.className = `message ${role}`;
-  
-  msgDiv.innerHTML = `
-    <div class="content">${content}</div>
-    <div class="time">${time}</div>
-  `;
-  
-  messagesDiv.appendChild(msgDiv);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
-}
-```
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| node_counts | array | 各类节点数量统计 |
+| class1_ill_counts | array | 一级分类疾病数量（Top 10） |
+| infectious_counts | array | 传染性疾病统计 |
+| healing_cycle_counts | array | 治疗周期分布（Top 10） |
 
 ---
 
-#### 6. 删除对话
+## 系统健康检查
 
-**接口**: `POST /delete_conversation`
+### 20. 健康检查
 
-**请求头**:
-```
-Content-Type: application/json
-Authorization: Bearer <token>
-```
+**接口地址:** `GET /health`
 
-**请求体**:
+**返回示例:**
 ```json
 {
-  "conversation_id": "conv_1713081234567_abc123"
+  "status": "healthy",
+  "services": {
+    "neo4j": "healthy",
+    "redis": "healthy",
+    "flask": "healthy"
+  },
+  "timestamp": "2024-01-01 12:00:00"
 }
 ```
 
-**响应**:
+**返回字段说明:**
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| status | string | 整体状态（healthy/degraded/unhealthy） |
+| services | object | 各服务状态 |
+| services.neo4j | string | Neo4j数据库状态 |
+| services.redis | string | Redis缓存状态 |
+| services.flask | string | Flask应用状态 |
+| timestamp | string | 检查时间戳 |
+
+---
+
+### 21. 清除缓存（调试用）
+
+**接口地址:** `GET /clear_cache` 或 `POST /clear_cache`
+
+**返回示例:**
 ```json
 {
   "success": true,
-  "message": "Conversation deleted successfully"
-}
-```
-
-**前端使用**:
-```javascript
-async function deleteConversation(conversationId) {
-  if (!confirm('确定要删除这个对话吗？')) {
-    return;
-  }
-  
-  const token = localStorage.getItem('token');
-  
-  try {
-    const response = await fetch('http://127.0.0.1:5001/delete_conversation', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        conversation_id: conversationId
-      })
-    });
-    
-    const data = await response.json();
-    
-    if (data.success) {
-      // 刷新对话列表
-      await loadConversationList();
-      
-      // 如果删除的是当前对话，清空聊天界面
-      if (conversationId === currentConversationId) {
-        clearChatUI();
-        currentConversationId = null;
-      }
-      
-      alert('删除成功');
-    } else {
-      alert('删除失败: ' + data.message);
-    }
-  } catch (error) {
-    console.error('删除对话失败:', error);
-    alert('网络错误');
-  }
+  "message": "缓存已清除"
 }
 ```
 
 ---
 
-## 💻 完整示例
+## 错误码说明
 
-### React 组件示例
+| 错误码 | 说明 | HTTP状态码 |
+|--------|------|-----------|
+| VALIDATION_ERROR | 参数验证失败 | 400 |
+| USER_EXISTS | 用户已存在 | 400 |
+| PHONE_EXISTS | 手机号已被注册 | 400 |
+| CODE_EXPIRED | 验证码已过期 | 400 |
+| INVALID_CODE | 验证码错误 | 400 |
+| INVALID_CREDENTIALS | 用户名或密码错误 | 401 |
+| UNAUTHORIZED | 未授权访问 | 401 |
+| FORBIDDEN | 禁止访问 | 403 |
+| NOT_FOUND | 资源不存在 | 404 |
+| RATE_LIMIT_EXCEEDED | 请求频率超限 | 429 |
+| INTERNAL_ERROR | 服务器内部错误 | 500 |
+| SMS_SEND_FAILED | 短信发送失败 | 500 |
 
-```jsx
-import React, { useState, useEffect } from 'react';
+---
 
-const ChatApp = () => {
-  const [messages, setMessages] = useState([]);
-  const [inputValue, setInputValue] = useState('');
-  const [conversations, setConversations] = useState([]);
-  const [currentConvId, setCurrentConvId] = useState(null);
-  const [loading, setLoading] = useState(false);
-  
-  const token = localStorage.getItem('token');
-  
-  // 加载对话列表
-  useEffect(() => {
-    loadConversations();
-  }, []);
-  
-  const loadConversations = async () => {
-    try {
-      const response = await fetch('http://127.0.0.1:5001/get_conversations', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await response.json();
-      if (data.success) {
-        setConversations(data.conversations);
-      }
-    } catch (error) {
-      console.error('加载对话列表失败:', error);
-    }
-  };
-  
-  // 加载对话详情
-  const loadConversation = async (conversationId) => {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5001/get_conversation_detail?conversation_id=${conversationId}`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      );
-      const data = await response.json();
-      if (data.success) {
-        setMessages(data.messages);
-        setCurrentConvId(conversationId);
-      }
-    } catch (error) {
-      console.error('加载对话失败:', error);
-    }
-  };
-  
-  // 发送消息
-  const sendMessage = async () => {
-    if (!inputValue.trim() || loading) return;
-    
-    const question = inputValue;
-    setInputValue('');
-    setLoading(true);
-    
-    // 如果没有当前会话，创建新会话
-    const convId = currentConvId || `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    if (!currentConvId) {
-      setCurrentConvId(convId);
-    }
-    
-    // 添加用户消息到界面
-    const userMsg = {
-      role: 'user',
-      content: question,
-      create_time: new Date().toLocaleString()
-    };
-    setMessages(prev => [...prev, userMsg]);
-    
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:5001/question?question=${encodeURIComponent(question)}&conversation_id=${convId}`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      );
-      
-      const data = await response.json();
-      
-      if (data.answer) {
-        // 添加 AI 消息到界面
-        const aiMsg = {
-          role: 'assistant',
-          content: data.answer,
-          create_time: new Date().toLocaleString()
-        };
-        setMessages(prev => [...prev, aiMsg]);
-        
-        // 刷新对话列表
-        loadConversations();
-      }
-    } catch (error) {
-      console.error('发送消息失败:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  // 新建对话
-  const startNewChat = () => {
-    setCurrentConvId(null);
-    setMessages([]);
-  };
-  
-  return (
-    <div className="chat-app">
-      {/* 侧边栏 */}
-      <div className="sidebar">
-        <button onClick={startNewChat}>+ 新建对话</button>
-        <div className="conversation-list">
-          {conversations.map(conv => (
-            <div 
-              key={conv.conversation_id}
-              className={`conversation-item ${conv.conversation_id === currentConvId ? 'active' : ''}`}
-              onClick={() => loadConversation(conv.conversation_id)}
-            >
-              <div className="preview">{conv.preview}</div>
-              <div className="time">{conv.last_update}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-      
-      {/* 聊天区域 */}
-      <div className="chat-main">
-        <div className="messages">
-          {messages.map((msg, index) => (
-            <div key={index} className={`message ${msg.role}`}>
-              <div className="content">{msg.content}</div>
-              <div className="time">{msg.create_time}</div>
-            </div>
-          ))}
-        </div>
-        
-        <div className="input-area">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-            placeholder="输入您的问题..."
-            disabled={loading}
-          />
-          <button onClick={sendMessage} disabled={loading}>
-            {loading ? '发送中...' : '发送'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+## 前端开发建议
+
+### 1. 认证流程
+```javascript
+// 1. 发送验证码
+const sendCode = async (phoneNumber) => {
+  const response = await fetch('http://localhost:5001/api/send_verification_code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone_number: phoneNumber })
+  });
+  return response.json();
 };
 
-export default ChatApp;
+// 2. 注册/登录
+const login = async (credentials) => {
+  const response = await fetch('http://localhost:5001/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials)
+  });
+  const data = await response.json();
+  
+  if (data.success) {
+    // 保存token到localStorage
+    localStorage.setItem('token', data.data.user.token);
+    localStorage.setItem('userInfo', JSON.stringify(data.data.user));
+  }
+  
+  return data;
+};
+
+// 3. 在后续请求中携带token
+const fetchData = async (url) => {
+  const token = localStorage.getItem('token');
+  const response = await fetch(`http://localhost:5001${url}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  return response.json();
+};
 ```
 
----
-
-## ❓ 常见问题
-
-### Q1: 为什么对话没有保存？
-
-**A**: 检查以下几点：
-1. 是否在请求中包含了 `conversation_id` 参数？
-2. 是否携带了有效的 `Authorization` header？
-3. Token 是否过期？
-4. 查看后端日志是否有错误信息
-
-### Q2: 如何生成 conversation_id？
-
-**A**: 前端生成，推荐使用以下格式：
+### 2. 问答功能
 ```javascript
-const conversationId = 'conv_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-// 示例：conv_1713081234567_abc123xyz
+// 发起医疗问答
+const askQuestion = async (question, conversationId) => {
+  const url = `http://localhost:5001/question?question=${encodeURIComponent(question)}&conversation_id=${conversationId}`;
+  const token = localStorage.getItem('token');
+  
+  const response = await fetch(url, {
+    headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+  });
+  
+  return response.json();
+};
+
+// 获取搜索建议（防抖处理）
+const getSearchSuggestions = async (keyword) => {
+  const response = await fetch(`http://localhost:5001/search_suggestions?keyword=${encodeURIComponent(keyword)}&limit=10`);
+  return response.json();
+};
 ```
 
-### Q3: Token 过期怎么办？
-
-**A**: 
+### 3. 对话历史
 ```javascript
-// 在每次请求后检查响应状态
-if (response.status === 401) {
-  localStorage.removeItem('token');
-  window.location.href = '/login';
-}
+// 获取对话列表
+const getConversations = async () => {
+  const token = localStorage.getItem('token');
+  const response = await fetch('http://localhost:5001/api/get_conversations', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  return response.json();
+};
+
+// 获取对话详情
+const getConversationDetail = async (conversationId) => {
+  const token = localStorage.getItem('token');
+  const response = await fetch(`http://localhost:5001/api/get_conversation_detail?conversation_id=${conversationId}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  return response.json();
+};
 ```
 
-### Q4: 如何实现类似 DeepSeek 的界面？
+### 4. 知识图谱可视化
+```javascript
+// 获取图谱数据（可用于ECharts等可视化库）
+const getGraphData = async (diseaseName) => {
+  const url = diseaseName 
+    ? `http://localhost:5001/get_graph?ill=${encodeURIComponent(diseaseName)}`
+    : 'http://localhost:5001/get_graph';
+  
+  const response = await fetch(url);
+  return response.json();
+};
 
-**A**: 参考上面的完整示例，关键点：
-1. 左侧显示对话列表（`/get_conversations`）
-2. 右侧显示聊天内容（`/get_conversation_detail`）
-3. 点击"新建对话"生成新的 `conversation_id`
-4. 发送问题时带上 `conversation_id`，自动保存
-
-### Q5: 对话数据保存在哪里？
-
-**A**: 保存在 MySQL 的 `conversations` 表中，格式为：
-```json
-{
-  "用户名": "问题内容",
-  "AI": "AI回答内容"
-}
+// ECharts配置示例
+const option = {
+  series: [{
+    type: 'graph',
+    layout: 'force',
+    data: graphData.graph_data,
+    links: graphData.links,
+    categories: graphData.labels,
+    roam: true,
+    label: { show: true },
+    force: { repulsion: 100 }
+  }]
+};
 ```
-
-### Q6: 可以修改已发送的消息吗？
-
-**A**: 当前版本不支持修改。如需修改，请删除该对话后重新发送。
 
 ---
 
-## 📞 技术支持
+## 注意事项
 
-如有问题，请查看：
-- 后端日志：`logs/app.log`
-- 错误日志：`logs/error.log`
-- 数据库表结构：`generate_table.sql`
+1. **API前缀**: 
+   - ✅ 所有用户相关接口必须使用 `/api` 前缀（如 `/api/login`）
+   - ❌ 不要省略 `/api` 前缀，否则会返回 405 错误
+   - ℹ️ 医疗问答和图谱接口不需要 `/api` 前缀（如 `/question`, `/get_graph`）
+
+2. **Token有效期**: JWT Token有效期为7天，过期后需重新登录
+3. **限流策略**: 
+   - 问答接口：30次/分钟
+   - 搜索建议：60次/分钟
+   - 全局默认：200次/天，50次/小时
+4. **缓存机制**: 疾病信息和图谱数据有缓存（1-2小时），可提高响应速度
+5. **跨域支持**: 已配置CORS，支持跨域请求
+6. **验证码查看**: 开发环境下验证码打印在控制台和日志文件中，不会真实发送短信
+7. **安全建议**: 
+   - 生产环境务必使用HTTPS
+   - 不要在前端代码中硬编码敏感信息
+   - Token应安全存储（建议使用httpOnly cookie）
 
 ---
 
-**文档版本**: v2.0  
-**最后更新**: 2026-04-14  
-**维护者**: Medical QA Team
+## 联系方式
+
+如有问题，请联系后端开发团队。
