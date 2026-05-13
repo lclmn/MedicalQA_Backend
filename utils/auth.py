@@ -44,26 +44,30 @@ def verify_password(plain_password, hashed_password):
         return False
 
 
-def generate_token(user_id, username):
+def generate_token(user_id, username, expires_delta=None):
     """
     Generate JWT access token
     
     Args:
         user_id: User ID
         username: Username
+        expires_delta: Token expiration time in seconds (optional, defaults to Config.JWT_ACCESS_TOKEN_EXPIRES)
         
     Returns:
         JWT token string
     """
+    if expires_delta is None:
+        expires_delta = Config.JWT_ACCESS_TOKEN_EXPIRES
+    
     payload = {
         'user_id': user_id,
         'username': username,
-        'exp': datetime.utcnow() + timedelta(seconds=Config.JWT_ACCESS_TOKEN_EXPIRES),
+        'exp': datetime.utcnow() + timedelta(seconds=expires_delta),
         'iat': datetime.utcnow()
     }
     
     token = jwt.encode(payload, Config.JWT_SECRET_KEY, algorithm='HS256')
-    logger.info(f"Token generated for user: {username}")
+    logger.info(f"Token generated for user: {username}, expires in {expires_delta} seconds")
     return token
 
 
@@ -81,10 +85,10 @@ def decode_token(token):
         payload = jwt.decode(token, Config.JWT_SECRET_KEY, algorithms=['HS256'])
         return payload
     except jwt.ExpiredSignatureError:
-        logger.warning("Token has expired")
+        logger.warning("Token已过期")
         return None
     except jwt.InvalidTokenError as e:
-        logger.warning(f"Invalid token: {e}")
+        logger.warning(f"无效的Token: {e}")
         return None
 
 
@@ -110,13 +114,13 @@ def token_required(f):
             except IndexError:
                 return jsonify({
                     'success': False,
-                    'message': 'Invalid token format. Use: Bearer <token>'
+                    'message': '无效的Token格式。请使用: Bearer <token>'
                 }), 401
         
         if not token:
             return jsonify({
                 'success': False,
-                'message': 'Token is missing'
+                'message': '缺少Token'
             }), 401
         
         # Decode token
@@ -124,7 +128,7 @@ def token_required(f):
         if payload is None:
             return jsonify({
                 'success': False,
-                'message': 'Token is invalid or expired'
+                'message': 'Token无效或已过期'
             }), 401
         
         # Add user info to request context
@@ -153,7 +157,7 @@ def admin_required(f):
         if not request.current_user.get('is_admin', False):
             return jsonify({
                 'success': False,
-                'message': 'Admin privileges required'
+                'message': '需要管理员权限'
             }), 403
         
         return f(*args, **kwargs)
