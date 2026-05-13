@@ -1,3 +1,6 @@
+import os
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 from flask import Flask,request,render_template,jsonify
 from flask_cors import CORS
 import logging
@@ -10,13 +13,14 @@ from utils.neo4j_utils import get_neo4j_driver, execute_cypher_query
 from utils.security import SecurityHeaders, sanitize_json_input, check_sql_injection
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import redis
 import pickle
+from utils.redis_utils import get_redis_client
 
 
 app = Flask(__name__,static_folder='./dist',  #设置静态文件夹目录
 template_folder = "./dist",static_url_path="")
 app.config['SECRET_KEY'] = Config.SECRET_KEY
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB request body limit
 
 # Enable CORS with restricted origins in production
 if Config.DEBUG:
@@ -47,30 +51,8 @@ limiter = Limiter(
 driver = get_neo4j_driver()
 app.register_blueprint(api_bp, url_prefix='/api')
 
-# Initialize Redis cache if available
-redis_cache = None
-try:
-    if Config.REDIS_HOST:
-        redis_params = {
-            'host': Config.REDIS_HOST,
-            'port': Config.REDIS_PORT,
-            'db': Config.REDIS_DB,
-            'decode_responses': False,
-            'socket_connect_timeout': 5
-        }
-        
-        # Add password if configured
-        if Config.REDIS_PASSWORD:
-            redis_params['password'] = Config.REDIS_PASSWORD
-        
-        redis_cache = redis.Redis(**redis_params)
-        redis_cache.ping()
-        logger.info("Redis cache connected successfully")
-    else:
-        logger.info("Redis not configured, using in-memory cache only")
-except Exception as e:
-    logger.warning(f"Redis connection failed: {e}. Using in-memory cache only.")
-    redis_cache = None
+# Initialize Redis cache via shared utility
+redis_cache = get_redis_client()
 
 
 def cache_get(key: str):
@@ -360,8 +342,9 @@ def medical_answer():
 
 def _save_conversation_to_db(user_id, username, conversation_id, question, answer):
     """
-    Helper function to save conversation to database
+    Save a Q&A pair to the conversations table.
     Format: {"username": "问题内容", "AI": "AI回答内容"}
+    Python 3.7+ dicts preserve insertion order, so username key always comes first.
     """
     try:
         import json
@@ -369,12 +352,11 @@ def _save_conversation_to_db(user_id, username, conversation_id, question, answe
         connection = get_db_connection()
         try:
             with connection.cursor() as cursor:
-                # Create JSON object with username and AI response
                 conversation_data = json.dumps({
                     username: question,
                     "AI": answer
                 }, ensure_ascii=False)
-                
+
                 insert_query = "INSERT INTO conversations (user_id, username, conversation_id, conversation_data) VALUES (%s, %s, %s, %s)"
                 cursor.execute(insert_query, (user_id, username, conversation_id, conversation_data))
                 connection.commit()
@@ -547,8 +529,8 @@ def index():
 @app.before_request
 def log_request_info():
     """Log incoming request information and perform security checks"""
-    logger.info(f"Request: {request.method} {request.path} from {request.remote_addr}")
-    
+    logger.info(f"--> {request.method} {request.path}  from {request.remote_addr}")
+
     # Check for SQL injection in query parameters
     for key, value in request.args.items():
         if check_sql_injection(value):
@@ -569,7 +551,7 @@ def log_request_info():
 def add_security_headers(response):
     """Add security headers to all responses"""
     response = SecurityHeaders.add_security_headers(response)
-    logger.info(f"Response: {response.status_code} for {request.method} {request.path}")
+    logger.info(f"<-- {response.status_code} {request.method} {request.path}")
     return response
 
 
@@ -589,11 +571,11 @@ def graceful_shutdown(signum, frame):
     except Exception as e:
         logger.error(f"Error closing Neo4j pool: {e}")
     
-    # Close Redis connection
+    # Close Redis connections
     try:
-        if redis_cache:
-            redis_cache.close()
-            logger.info("Redis connection closed")
+        from utils.redis_utils import close_all as close_redis
+        close_redis()
+        logger.info("Redis connections closed")
     except Exception as e:
         logger.error(f"Error closing Redis: {e}")
     
@@ -666,7 +648,6 @@ if __name__ == '__main__':
     except ValueError as e:
         logger.error(f"Configuration validation failed: {e}")
         raise
-    
-    logger.info(f"Starting Flask application on port {Config.PORT}")
-    logger.info(f"Environment: {'Development' if Config.DEBUG else 'Production'}")
+
+    logger.info(f"Starting Flask application on port {Config.PORT}, debug={Config.DEBUG}")
     app.run(debug=Config.DEBUG, threaded=True, port=Config.PORT)

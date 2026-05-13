@@ -9,31 +9,16 @@ from utils.response import APIResponse
 from utils.logger import logger
 from utils.sms_service import sms_service
 from config import Config
-import redis
+from utils.redis_utils import get_redis_client
 # api.py
 
 
 api_bp = Blueprint('user', __name__)
 
 # Initialize Redis for storing verification codes
-redis_client = None
-try:
-    if Config.REDIS_HOST:
-        redis_params = {
-            'host': Config.REDIS_HOST,
-            'port': Config.REDIS_PORT,
-            'db': Config.REDIS_DB,
-            'decode_responses': True,
-            'socket_connect_timeout': 5
-        }
-        if Config.REDIS_PASSWORD:
-            redis_params['password'] = Config.REDIS_PASSWORD
-        redis_client = redis.Redis(**redis_params)
-        redis_client.ping()
-        logger.info("Redis connected for verification code storage")
-except Exception as e:
-    logger.warning(f"Redis connection failed for verification codes: {e}. Using in-memory storage.")
-    redis_client = None
+redis_client = get_redis_client(decode_responses=True)
+if not redis_client:
+    logger.info("Redis not available for verification codes, using in-memory storage.")
 
 # In-memory storage fallback (for development without Redis)
 verification_codes_memory = {}
@@ -149,6 +134,12 @@ def send_verification_code():
             # Store the code for later verification (5 minutes expiry)
             store_verification_code(clean_phone, code, expire=300)
             logger.info(f"Verification code sent to {clean_phone}")
+            # In DEBUG mode, return the code in the response for development convenience
+            if Config.DEBUG:
+                return APIResponse.success(
+                    message='验证码发送成功（开发模式：验证码已返回）',
+                    data={'code': code}
+                )
             return APIResponse.success(message='验证码发送成功，请注意查收')
         else:
             logger.error(f"Failed to send SMS to {clean_phone}: {message}")
@@ -678,19 +669,18 @@ def adminlogin():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'success': False, 'message': '请求体不能为空'}), 400
-        
+            return APIResponse.validation_error(message='请求体不能为空')
+
         username = data.get('username')
         password = data.get('password')
-        
-        # Validate admin username
+
         is_valid, error_msg = validate_username(username)
         if not is_valid:
-            return jsonify({'success': False, 'message': error_msg}), 400
-        
+            return APIResponse.validation_error(message=error_msg)
+
         if not password or not isinstance(password, str):
-            return jsonify({'success': False, 'message': '密码不能为空'}), 400
-        
+            return APIResponse.validation_error(message='密码不能为空')
+
         connection = get_db_connection()
         try:
             with connection.cursor() as cursor:
@@ -701,7 +691,7 @@ def adminlogin():
             if user and verify_password(password, user['password']):
                 token = generate_token(user['id'], user['adminname'])
                 logger.info(f"Admin logged in successfully: {username}")
-                
+
                 admin_data = {
                     'id': user['id'],
                     'adminname': user['adminname'],
@@ -709,15 +699,15 @@ def adminlogin():
                     'token': token,
                     'is_admin': True
                 }
-                return jsonify({'success': True, 'user': admin_data})
+                return APIResponse.success(data={'user': admin_data})
             else:
                 logger.warning(f"Failed admin login attempt: {username}")
-                return jsonify({'success': False, 'error': '用户名或密码错误'}), 401
+                return APIResponse.unauthorized(message='用户名或密码错误')
         finally:
             connection.close()
     except Exception as e:
         logger.error(f"Admin login failed: {e}")
-        return jsonify({'success': False, 'message': '登录失败', 'error': str(e)}), 500
+        return APIResponse.internal_error(message='登录失败')
 
 
 @api_bp.route('/get_conversations', methods=['GET'])
@@ -746,44 +736,52 @@ def get_conversations():
         connection = get_db_connection()
         try:
             with connection.cursor() as cursor:
-                # Get distinct conversations with their latest Q&A pair
+                # Get the FIRST question of each conversation as its title,
+                # while keeping the latest update time for sorting.
                 query = """
-                SELECT 
-                    c.conversation_id,
-                    c.conversation_data,
-                    c.create_time as last_update,
-                    conv_counts.conv_count
-                FROM conversations c
+                SELECT
+                    c_first.conversation_id,
+                    c_first.conversation_data,
+                    c_stats.last_update,
+                    c_stats.conv_count
+                FROM conversations c_first
                 INNER JOIN (
-                    SELECT 
-                        conversation_id,
-                        MAX(create_time) as max_time,
-                        COUNT(*) as conv_count
+                    SELECT conversation_id, MIN(create_time) as first_time
                     FROM conversations
                     WHERE user_id = %s
                     GROUP BY conversation_id
-                ) conv_counts ON c.conversation_id = conv_counts.conversation_id AND c.create_time = conv_counts.max_time
-                WHERE c.user_id = %s
-                ORDER BY c.create_time DESC
+                ) first_msg ON c_first.conversation_id = first_msg.conversation_id
+                    AND c_first.create_time = first_msg.first_time
+                INNER JOIN (
+                    SELECT conversation_id,
+                           MAX(create_time) as last_update,
+                           COUNT(*) as conv_count
+                    FROM conversations
+                    WHERE user_id = %s
+                    GROUP BY conversation_id
+                ) c_stats ON c_first.conversation_id = c_stats.conversation_id
+                WHERE c_first.user_id = %s
+                ORDER BY c_stats.last_update DESC
                 """
-                cursor.execute(query, (user_id, user_id))
+                cursor.execute(query, (user_id, user_id, user_id))
                 conversations = cursor.fetchall()
-                
+
                 # Format the response
                 import json
                 result = []
                 for conv in conversations:
-                    # Parse conversation_data JSON
                     conv_data = json.loads(conv['conversation_data']) if isinstance(conv['conversation_data'], str) else conv['conversation_data']
-                    
-                    # Get the first key (username) and AI response for preview
-                    username = list(conv_data.keys())[0]
-                    user_question = conv_data[username]
-                    ai_answer = conv_data.get('AI', '')
-                    
-                    # Create preview text (use AI answer as it's more informative)
-                    preview = ai_answer[:100] + '...' if len(ai_answer) > 100 else ai_answer
-                    
+
+                    # Format: {username: question, "AI": answer}
+                    # The first record's question becomes the conversation title
+                    user_question = ''
+                    for key in conv_data:
+                        if key != 'AI':
+                            user_question = conv_data[key]
+                            break
+
+                    preview = user_question[:50] + '...' if len(user_question) > 50 else user_question
+
                     result.append({
                         'conversation_id': conv['conversation_id'],
                         'preview': preview,
@@ -843,23 +841,27 @@ def get_conversation_detail():
                 import json
                 messages = []
                 for record in records:
-                    # Parse conversation_data JSON
                     conv_data = json.loads(record['conversation_data']) if isinstance(record['conversation_data'], str) else record['conversation_data']
-                    
-                    # Extract username (first key) and AI response
-                    username = list(conv_data.keys())[0]
-                    user_question = conv_data[username]
+
+                    # Format: {username: question, "AI": answer}
+                    # Find the key that is not "AI" — that's the username -> question pair
+                    username = ''
+                    user_question = ''
+                    for key in conv_data:
+                        if key != 'AI':
+                            username = key
+                            user_question = conv_data[key]
+                            break
+
                     ai_answer = conv_data.get('AI', '')
-                    
-                    # Add user message
+
                     messages.append({
                         'role': 'user',
                         'username': username,
                         'content': user_question,
                         'create_time': record['create_time'].strftime('%Y-%m-%d %H:%M:%S') if record['create_time'] else None
                     })
-                    
-                    # Add AI message
+
                     messages.append({
                         'role': 'assistant',
                         'content': ai_answer,

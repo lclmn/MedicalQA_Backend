@@ -136,8 +136,15 @@ class SecurityHeaders:
         # Strict Transport Security (HTTPS only)
         # response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
         
-        # Content Security Policy
-        response.headers['Content-Security-Policy'] = "default-src 'self'"
+        # Content Security Policy - allow inline styles/scripts for SPA frameworks
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'"
+        )
         
         # Referrer Policy
         response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'

@@ -8,8 +8,8 @@ from config import Config
 from utils.logger import logger
 import hashlib
 import time
-import redis
 import pickle
+from utils.redis_utils import get_redis_client
 
 # Configuration from environment variables
 NEO4J_URI = Config.NEO4J_URI
@@ -98,27 +98,10 @@ class MedicalQAChain:
         self._cache = {}
         self._cache_ttl = 3600  # Cache TTL: 1 hour
         
-        # Initialize Redis cache if available
-        self._redis_cache = None
-        try:
-            if Config.REDIS_HOST:
-                redis_params = {
-                    'host': Config.REDIS_HOST,
-                    'port': Config.REDIS_PORT,
-                    'db': Config.REDIS_DB + 1,  # Use separate DB for QA cache
-                    'decode_responses': False,
-                    'socket_connect_timeout': 5
-                }
-                
-                # Add password if configured
-                if Config.REDIS_PASSWORD:
-                    redis_params['password'] = Config.REDIS_PASSWORD
-                
-                self._redis_cache = redis.Redis(**redis_params)
-                self._redis_cache.ping()
-                logger.info("Redis cache initialized for QA chain")
-        except Exception as e:
-            logger.warning(f"Redis cache initialization failed: {e}. Using in-memory cache only.")
+        # Initialize Redis cache via shared utility (separate DB for QA cache)
+        self._redis_cache = get_redis_client(db=Config.REDIS_DB + 1)
+        if not self._redis_cache:
+            logger.info("Redis not available for QA cache, using in-memory cache only.")
 
         # Cypher Generation Prompt with few-shot examples
         self.cypher_generation_template = """Task: Generate Cypher statement to query a graph database.
